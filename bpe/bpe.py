@@ -1,13 +1,13 @@
-from collections import Counter
-import os
-import time
-import timeit
 import bisect
-import re
 import heapq
 import itertools
+import logging
+from collections import Counter
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class BPE(ABC):
 
@@ -34,30 +34,13 @@ class BPE(ABC):
     class Bigramdata:
         count: int
         word_ids: list[int]
-        
-    @dataclass
-    class TimeResults:
-        initialize_time = 0.0
-        most_common_time = 0.0
-        filter_time = 0.0
-        tokenize_time = 0.0
-        remove_counter_time = 0.0
-        add_counter_time = 0.0
-        
-        def __str__(self):
-            return f"Initialization time: {self.initialize_time:.4f} seconds\nMost common time: \
-{self.most_common_time:.4f}\nFilter time: {self.filter_time:.4f}\nTokenization time: {self.tokenize_time:.4f}\
-\nRemove counter time: {self.remove_counter_time:.4f}\nAdd counter time: {self.add_counter_time:.4f}"
 
-    def __init__(self, timed=False, verify=False):
+    def __init__(self, verify=False):
         self._initial_word_list: list[str] = None
         self._vocabulary: any = None
         self._merges_performed: int = 0
-        self._timed = timed
         self._verify = verify
         self._time_results = None
-        if self._timed:
-            self._time_results = self.TimeResults()
     
     def train(self, initial_word_list: list[str], max_merges: int) -> None:
 
@@ -78,11 +61,12 @@ class BPE(ABC):
         if self._verify:
             if isinstance(self, HeapBPE):
                 for key in counter._entry_finder:
-                    if counter._entry_finder[key].count < 0:
-                        print(f"Key {key} has invalid count {counter._entry_finder[key].count}")
-            print(f"\nAverage token length: {sum([len(el) for el in vocab])/len(vocab):.3f}")
+                    assert counter._entry_finder[key].count >= 0, f"Key {key} has invalid count {counter._entry_finder[key].count}"
+                logger.info("All values in token counter are non-negative")
             bigger_than_one = {el: vocab.count(el) for el in set(vocab) if vocab.count(el) > 1}
             assert not bigger_than_one
+            logger.info("No duplicate items in vocabulary")
+            logger.info(f"Average token length: {sum([len(el) for el in vocab])/len(vocab):.3f}")
 
         self._merges_performed = merge_number + 1
 
@@ -122,9 +106,6 @@ class BPE(ABC):
 class NaiveBPE(BPE):
     def _initialize(self) -> tuple[list[str], list[list[str]], Counter]:
 
-        if self._timed:
-            start_time = time.time()
-
         initial_word_list = self._initial_word_list
         vocab = sorted(list(set("".join(initial_word_list))))
 
@@ -139,21 +120,11 @@ class NaiveBPE(BPE):
                 token_bigrams.append((token[i], token[i+1]))
         counter = Counter(token_bigrams)
 
-        if self._timed:
-            self._time_results.initialize_time += time.time() - start_time
-
         return (vocab, tokens, counter)
     
     def _get_most_common(self, counter: Counter) -> tuple[tuple[str, str], int]:
-        
-        if self._timed:
-            start_time = time.time()
 
         result = counter.most_common(1)[0]
-        #print(result)
-        
-        if self._timed:
-            self._time_results.most_common_time += time.time() - start_time
 
         return result
     
@@ -165,9 +136,6 @@ class NaiveBPE(BPE):
         return vocab
     
     def _filter(self, tokens: list[list[tuple]], most_common: tuple[tuple[str, str], int]) -> list[int]:
-        
-        if self._timed:
-            start_time = time.time()
             
         most_common_seq = most_common[0]
         most_common_bigram = "".join(most_common_seq)
@@ -177,18 +145,12 @@ class NaiveBPE(BPE):
         for i, word in enumerate(self._initial_word_list):
             if most_common_bigram in word:
                 indices.append(i)
-
-        if self._timed:
-            self._time_results.filter_time += time.time() - start_time
         
         return indices
     
     def _tokenize(self, tokens: list[list[tuple[str, str]]], indices_filtered: list[int], \
                   most_common: tuple[tuple[str, str], int], counter: Counter) -> \
                   tuple[list[str], list[str], list[str]]:
-        
-        if self._timed:
-            start_time = time.time()
 
         most_common_seq = most_common[0]
         remove_from_count = []
@@ -222,20 +184,8 @@ class NaiveBPE(BPE):
                 add_to_count.extend([(new_token[i], new_token[i+1]) for i in range(len(new_token) - 1)])
             tokens[index] = new_token
         
-        if self._timed:
-            self._time_results.tokenize_time += time.time() - start_time
-            start_time = time.time()
-        
         counter.subtract(remove_from_count)
-
-        if self._timed:
-            self._time_results.remove_counter_time += time.time() - start_time
-            start_time = time.time()
-
         counter.update(add_to_count)
-
-        if self._timed:
-            self._time_results.add_counter_time += time.time() - start_time
 
         return (tokens, counter)
     
@@ -257,7 +207,7 @@ class HeapBPE(BPE):
                 if bigram.tokens != self._REMOVED:
                     del self._entry_finder[bigram.tokens]
                     return bigram
-            raise KeyError("pop from an empty heap")
+            raise KeyError("Pop from an empty heap")
         
         def add_bigram(self, bigram: any) -> None:
 
@@ -272,11 +222,6 @@ class HeapBPE(BPE):
             entry.tokens = self._REMOVED
     
     def _initialize(self) -> tuple[list[str], list[list[str]], list[BPE.Bigram]]:
-
-        if self._timed:
-            start_time = time.time()
-        self._one_time = 0.0
-        self._two_time = 0.0
 
         initial_word_list = self._initial_word_list
         vocab = sorted(list(set("".join(initial_word_list))))
@@ -310,20 +255,11 @@ class HeapBPE(BPE):
         #Time use negligible
         bigrams = self.LazyDeletionHeap(bigrams)
 
-        if self._timed:
-            self._time_results.initialize_time += time.time() - start_time
-
         return (vocab, tokens, bigrams)
     
     def _get_most_common(self, counter: list[BPE.Bigram]) -> tuple[tuple[str, str], int]:
 
-        if self._timed:
-            start_time = time.time()
-
         most_common = counter.pop_bigram()
-
-        if self._timed:
-            self._time_results.most_common_time += time.time() - start_time
 
         return (most_common.tokens, most_common.word_ids)
     
@@ -337,23 +273,14 @@ class HeapBPE(BPE):
         return vocab
     
     def _filter(self, _: list[list[tuple]], most_common: tuple[tuple[str, str], int]) -> list[int]:
-        
-        if self._timed:
-            start_time = time.time()
 
         result = most_common[1]
-
-        if self._timed:
-            self._time_results.filter_time += time.time() - start_time
 
         return result
     
     def _tokenize(self, tokens: list[list[tuple[str, str]]], indices_filtered: list[int], \
                   most_common: tuple[tuple[str, str], int], counter) -> \
                   tuple[list[str], list[str], list[str]]:
-        
-        if self._timed:
-            start_time = time.time()
 
         most_common_seq = most_common[0]
         most_common_as_str = "".join(most_common_seq)
@@ -374,6 +301,7 @@ class HeapBPE(BPE):
             
             removed: list[tuple] = []
             match_indices: list[int] = []
+
             while index_old < len(word_tokens):
                 if word_tokens[index_old] == most_common_seq:
                     match_indices.append(index_old)
@@ -443,12 +371,8 @@ class HeapBPE(BPE):
 
             tokens[index] = new_token
 
-        if self._timed:
-            self._time_results.tokenize_time += time.time() - start_time
-            start_time = time.time()
-
         for key in remove_from_counts:
-            #remove_from_counts[key].count is invariably be non-zero and not most_common_seq
+            #remove_from_counts[key].count is invariably non-zero and not most_common_seq
             try:
                 old_bigram = counter.get_bigram(key)
             except KeyError:
@@ -467,7 +391,7 @@ class HeapBPE(BPE):
                             check_in_list(remove_from_counts[key].word_ids, id)]
 
             """            
-            #Not working, not performing enough merges
+            #TODO: Implement. Currently not working because not enough merges are being performed.
             def list_difference(l1: list[int], l2: list[int]):
                 result = []
                 l1_iter = iter(l1)
@@ -493,15 +417,8 @@ class HeapBPE(BPE):
 
             counter.add_bigram(BPE.Bigram(new_count, key, new_word_ids))
 
-        if self._timed:
-            self._time_results.remove_counter_time += time.time() - start_time
-            start_time = time.time()
-
         for key in add_to_counts:
             if add_to_counts[key].count > 0:
                 counter.add_bigram(BPE.Bigram(add_to_counts[key].count, key, add_to_counts[key].word_ids))
-        
-        if self._timed:
-            self._time_results.add_counter_time += time.time() - start_time
 
         return (tokens, counter)
