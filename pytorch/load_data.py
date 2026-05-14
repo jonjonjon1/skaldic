@@ -46,7 +46,10 @@ def _clean_stanzas(stanzas: pd.Series, valid_chars: list[str]) -> list[str]:
         if rejoined: cleaned_stanzas.append(rejoined)
     return cleaned_stanzas
 
-def _train_sentencepiece(str_list: list[str], model_path: Path, vocab_size: int):
+def _train_sentencepiece(str_list: list[str],
+                         model_path: Path,
+                         vocab_size: int,
+                         seed: int):
 
     data_iter = io.BytesIO("\n".join(str_list).encode("utf-8"))
     spm.SentencePieceTrainer.train(sentence_iterator=data_iter,
@@ -56,7 +59,8 @@ def _train_sentencepiece(str_list: list[str], model_path: Path, vocab_size: int)
                                    pad_id=0,
                                    unk_id=1,
                                    bos_id=2,
-                                   eos_id=3)
+                                   eos_id=3,
+                                   seed=seed)
     sp = spm.SentencePieceProcessor(model_file=f"{model_path}.model")
     return sp
 
@@ -89,7 +93,10 @@ def load_data(args: argparse.Namespace) -> pd.DataFrame:
     if next(bin_dir.glob("sentencepiece*"), None) or args.overwrite_models:
         sp = spm.SentencePieceProcessor(model_file=f"{sentencepiece_default}.model")
     else:
-        sp = _train_sentencepiece(data_copy["norse_poems"].tolist(), sentencepiece_default)
+        sp = _train_sentencepiece(data_copy["norse_poems"].tolist(),
+                                  sentencepiece_default,
+                                  vocab_size=args.vocab_size,
+                                  seed=args.seed)
     
     tokenized = []
     for stanza in data_copy["norse_poems"]:
