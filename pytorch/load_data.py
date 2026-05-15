@@ -96,11 +96,14 @@ def load_data(args: argparse.Namespace) -> pd.DataFrame:
         sp = _train_sentencepiece(data_copy["norse_poems"].tolist(),
                                   sentencepiece_default,
                                   vocab_size=args.vocab_size,
-                                  seed=args.seed)
+                                  seed=args.seed,
+                                  split_by_whitespace=False,
+                                  user_defined_symbols=["\n"])
     
     tokenized = []
     for stanza in data_copy["norse_poems"]:
         tokenized_stanza = sp.encode_as_pieces(stanza)
         tokenized.append(tokenized_stanza)
+    data_copy["tokenized"] = tokenized
     
     return data_copy

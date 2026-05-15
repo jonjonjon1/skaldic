@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import normalize
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -27,10 +29,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_file", type=str, default="norse_poems.csv", help="Data filename, all data is in \"..\\data\" directory")
     parser.add_argument("--vocab_size", type=int, default=1000)
-    parser.add_argument("--doc2vec_epochs", type=int, default=50)
+    parser.add_argument("--doc2vec_epochs", type=int, default=20)
     parser.add_argument("--doc2vec_features", type=int, default=64)
-    parser.add_argument("--doc2vec_window", default=5)
-    parser.add_argument("--n_authors", type=int, default=6)
+    parser.add_argument("--doc2vec_window", default=12)
+    parser.add_argument("--n_authors", type=int, default=8)
     parser.add_argument("--min_n_stanzas", type=int, default=12)
     parser.add_argument("--volume_row_fraction", type=float, default=.03)
     parser.add_argument("--dim_red", type=str, choices=["PCA", "tSNE"], default="tSNE")
@@ -47,7 +49,7 @@ def train_doc2vec(tokenized_list: list[list[str]],
     doc2vec_model = Doc2Vec(
         vector_size=args.doc2vec_features,
         window=args.doc2vec_window,
-        min_count=1,
+        min_count=5,
         # Has to be 1 to guarantee deterministic runs
         workers=1,
         epochs=args.doc2vec_epochs,
@@ -63,6 +65,21 @@ def train_doc2vec(tokenized_list: list[list[str]],
 
     return doc2vec_model
 
+def calculate_centroid_diff(vectors: np.ndarray, labels: list[str]):
+    labels = np.array(labels)
+    values, counts = np.unique(labels, return_counts=True)
+    uniques = values[counts > 1]
+
+    variances = {}
+    for label in sorted(uniques):
+        mask = (labels == label)
+        grouped_vectors = vectors[mask]
+        centroid = np.mean(grouped_vectors, axis=0)
+        differences = grouped_vectors - centroid
+        squared_dist = np.sum(np.square(differences), axis=1)
+        variances[label] = np.mean(np.sqrt(squared_dist))
+    return variances
+
 def visualize_author_diff(df: pd.DataFrame,
                           vectorized_stanzas: np.ndarray,
                           n_authors: int,
@@ -74,14 +91,21 @@ def visualize_author_diff(df: pd.DataFrame,
     if dim_red == "PCA":
         pca = PCA(n_components=3, random_state=random_state)
         results = pca.fit_transform(vectorized_stanzas)
-
+        results2d = np.array(0)
     else:
         tsne = TSNE(n_components=3,
+                    perplexity=20,
+                    learning_rate="auto",
+                    max_iter=2000,
+                    init="pca",
+                    random_state=random_state)
+        results = tsne.fit_transform(vectorized_stanzas)
+        tsne2d = TSNE(n_components=2,
                     perplexity=20,
                     learning_rate=10,
                     max_iter=2000,
                     random_state=random_state)
-        results = tsne.fit_transform(vectorized_stanzas)
+        results2d = tsne2d.fit_transform(vectorized_stanzas)
 
     df = df[~df["author"].str.contains("Anonymous", na=False)]
 
@@ -101,7 +125,7 @@ def visualize_author_diff(df: pd.DataFrame,
         dest_path = plot_dir / f"volumes_{dim_red}_{timestamp}"
     else: dest_path = None
 
-    _make_plot(df["author"], results, dim_red, dest_path)
+    _make_plot(df["author"], results, dim_red, dest_path, results2d=results2d)
 
 def visualize_volume_diff(df: pd.DataFrame,
                           vectorized_stanzas: np.ndarray,
@@ -113,15 +137,23 @@ def visualize_volume_diff(df: pd.DataFrame,
     if dim_red == "PCA":
         pca = PCA(n_components=3,  random_state=random_state)
         results = pca.fit_transform(vectorized_stanzas)
+        results2d = np.array(0)
     else:
         tsne = TSNE(n_components=3,
                     perplexity=20,
                     learning_rate=10,
                     max_iter=2000,
+                    init="pca",
                     random_state=random_state)
         results = tsne.fit_transform(vectorized_stanzas)
+        tsne2d = TSNE(n_components=2,
+                    perplexity=20,
+                    learning_rate=10,
+                    max_iter=2000,
+                    init="pca",
+                    random_state=random_state)
+        results2d = tsne2d.fit_transform(vectorized_stanzas)
 
-    #chosen_volumes = df[df["volume"].isin([1, 5, 7])]
     chosen_volumes = df
     sampled_rows = chosen_volumes.sample(frac=fraction)
     logger.info(f"Sampling {sampled_rows.shape[0]} rows from total of {df.shape[0]}")
@@ -132,12 +164,13 @@ def visualize_volume_diff(df: pd.DataFrame,
         dest_path = plot_dir / f"volumes_{dim_red}_{timestamp}"
     else: dest_path = None
 
-    _make_plot(df["volume"], results, dim_red, dest_path)
+    _make_plot(df["volume"], results, dim_red, dest_path, results2d=results2d)
 
 def _make_plot(series: pd.Series,
                results: np.ndarray,
                dim_red: Literal["PCA", "tSNE"],
-               dest_path: Path) -> None:
+               dest_path: Path,
+               results2d: np.ndarray|None=None) -> None:
     
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection="3d")
@@ -178,15 +211,26 @@ def _make_plot(series: pd.Series,
     for label in sorted(labels):
         indices = [i for i, l in enumerate(series) if l == label]
         
-        ax.scatter(
-            results[indices,0],
-            results[indices,1],
-            label=label,
-            color=label_color_map[label],
-            s=60,
-            alpha=.7,
-            edgecolors="w"
-        )
+        if not results2d.any():
+            ax.scatter(
+                results[indices,0],
+                results[indices,1],
+                label=label,
+                color=label_color_map[label],
+                s=60,
+                alpha=.7,
+                edgecolors="w"
+            )
+        else:
+            ax.scatter(
+                results2d[indices,0],
+                results2d[indices,1],
+                label=label,
+                color=label_color_map[label],
+                s=60,
+                alpha=.7,
+                edgecolors="w"
+            )
 
     ax.grid(alpha=.5)
     ax.set_title(f"{dim_red} embeddings of documents (stanzas)", fontsize=15)
@@ -217,6 +261,19 @@ if __name__=="__main__":
 
     tokenized = df["tokenized"]
     stanza_vectors = np.array([doc2vec_model.dv[i] for i in range(len(tokenized))])
+    vectors_normalized = normalize(stanza_vectors, axis=1, norm="l2")
+    
+    label = "author"
+    author_silhouette = silhouette_score(vectors_normalized, df[label].copy().tolist(), metric="cosine")
+    author_variances = calculate_centroid_diff(vectors_normalized, df[label].copy().tolist())
+    author_mean_variance = np.array(list(author_variances.values())).mean()
+    logger.info(f"Author clusters\tSilhouette score: {author_silhouette}\tMean variance: {author_mean_variance}")
+    label = "volume"
+    volume_silhouette = silhouette_score(vectors_normalized, df[label].copy().tolist(), metric="cosine")
+    volume_variances = calculate_centroid_diff(vectors_normalized, df[label].copy().tolist())
+    volume_mean_variance = np.array(list(volume_variances.values())).mean()
+    logger.info(f"Volume clusters\tSilhouette score: {volume_silhouette}\tMean variance: {volume_mean_variance}")
+
 
     if args.save_fig:
         plot_dir = current_dir / "plots"
